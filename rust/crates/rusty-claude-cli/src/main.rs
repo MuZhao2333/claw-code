@@ -9992,6 +9992,31 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
             } else {
                 None
             };
+            // Collect tool_use IDs from the previous message so we can filter
+            // orphaned tool_result blocks (the reverse direction).
+            let prev_tool_use_ids: Option<Vec<&str>> =
+                if message.role != MessageRole::Assistant {
+                    messages.get(i.wrapping_sub(1)).and_then(|prev| {
+                        if prev.role == MessageRole::Assistant {
+                            Some(
+                                prev.blocks
+                                    .iter()
+                                    .filter_map(|block| {
+                                        if let ContentBlock::ToolUse { id, .. } = block {
+                                            Some(id.as_str())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect(),
+                            )
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    None
+                };
             let content = message
                 .blocks
                 .iter()
@@ -10001,6 +10026,13 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
                             return result_ids.contains(&id.as_str());
                         }
                         // No next message → no tool_results → drop the tool_use
+                        return false;
+                    }
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                        if let Some(ref use_ids) = prev_tool_use_ids {
+                            return use_ids.contains(&tool_use_id.as_str());
+                        }
+                        // No prev assistant message → drop the tool_result
                         return false;
                     }
                     true
