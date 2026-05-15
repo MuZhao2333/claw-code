@@ -9965,19 +9965,57 @@ fn permission_policy(
 fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
     messages
         .iter()
-        .filter_map(|message| {
+        .enumerate()
+        .filter_map(|(i, message)| {
             let role = match message.role {
                 MessageRole::System | MessageRole::User | MessageRole::Tool => "user",
                 MessageRole::Assistant => "assistant",
             };
+            // Collect tool_result IDs from the next message so we can filter
+            // orphaned tool_use blocks (which break the Anthropic API contract
+            // that every tool_use must be immediately followed by a matching
+            // tool_result).
+            let next_tool_result_ids: Option<Vec<&str>> = if message.role == MessageRole::Assistant
+            {
+                messages.get(i + 1).map(|next| {
+                    next.blocks
+                        .iter()
+                        .filter_map(|block| {
+                            if let ContentBlock::ToolResult { tool_use_id, .. } = block {
+                                Some(tool_use_id.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+            } else {
+                None
+            };
             let content = message
                 .blocks
                 .iter()
+                .filter(|block| {
+                    if let ContentBlock::ToolUse { id, .. } = block {
+                        if let Some(ref result_ids) = next_tool_result_ids {
+                            return result_ids.contains(&id.as_str());
+                        }
+                        // No next message → no tool_results → drop the tool_use
+                        return false;
+                    }
+                    true
+                })
                 .filter_map(|block| match block {
                     ContentBlock::Text { text } => {
                         Some(InputContentBlock::Text { text: text.clone() })
                     }
-                    ContentBlock::Thinking { .. } => None,
+                    ContentBlock::Thinking {
+                        thinking,
+                        signature,
+                    } => Some(InputContentBlock::Thinking {
+                        thinking: thinking.clone(),
+                        signature: signature.clone(),
+                    }),
                     ContentBlock::ToolUse { id, name, input } => Some(InputContentBlock::ToolUse {
                         id: id.clone(),
                         name: name.clone(),
